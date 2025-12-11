@@ -44,63 +44,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
   void initState() {
     super.initState();
     _aiService.initialize();
-    
-    // Check for pending slips from Global Provider
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      final provider = context.read<AppGlobalProvider>();
-      if (provider.pendingSlips.isNotEmpty) {
-        _injectPendingSlips(List.from(provider.pendingSlips));
-        provider.clearPendingSlips();
-      }
-    });
-  }
-
-  Future<void> _injectPendingSlips(List<SlipData> slips) async {
-    print("[ChatScreen] Injecting ${slips.length} pending slips...");
-    for (final slip in slips) {
-      // Create a message for each slip
-      // Note: We don't have the original file path here easily unless we stored it in SlipData.
-      // Ideally SlipData should have 'filePath'. 
-      // For now, we'll assume we can't display the image perfectly if we didn't store the path,
-      // BUT SlipScannerService returns SlipData which DOES NOT have filePath currently.
-      // We need to update SlipData to include filePath or just display the data card.
-      
-      // Let's create a Text Message with the data attached, or a "System" message.
-      // Better yet, let's just add them as "Pending" messages that are already "scanned".
-      
-      final msg = ChatMessage(
-        text: "Slip from Auto-Scan",
-        isUser: false,
-        timestamp: slip.date,
-        // imagePath: ??? // We need this for the UI to look good.
-        // Let's update SlipData to include filePath in the next step if needed, 
-        // but for now let's just save them as transactions directly? 
-        // No, user wants to "Review".
-        
-        // Workaround: Since we don't have the file path in SlipData (my bad in previous design),
-        // we will display them as "Auto-Detected Slip" cards without image for now, 
-        // or we assume the user will just see the data.
-        
-        // Actually, let's look at SlipScannerService. It returns SlipData.
-        // I should have added filePath to SlipData. 
-        // For this iteration, I will assume we can just show the data.
-        
-        slipData: {
-          'bank': slip.bank,
-          'amount': slip.amount,
-          'date': slip.date,
-          'memo': slip.memo,
-          'recipient': slip.recipient,
-        },
-      );
-      
-      await DatabaseService().addChatMessage(msg);
-    }
-    _scrollToBottom();
-    
-    if (mounted) {
-      showTopRightToast(context, "Imported ${slips.length} slips for review");
-    }
+    // No need to inject pending slips anymore, they are in the DB.
   }
 
   @override
@@ -122,7 +66,7 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
 
   // Public method called from HomeScreen (Legacy) -> Now internal or via AppBar
   Future<void> scanSlips() async {
-    // 1. Check Folder Selection
+    // 1. Check Folder Selection (Restore Original Behavior)
     final selectedAlbumIds = await _historyService.getSelectedAlbumIds();
     if (selectedAlbumIds.isEmpty) {
       // Open Selection Screen
@@ -133,111 +77,15 @@ class _ChatConversationScreenState extends State<ChatConversationScreen> {
       if (result != true) return; // User cancelled
     }
 
-    // 2. Fetch Images
-    setState(() => _isProcessing = true);
-    List<File> newImages = [];
+    // Call the shared scan logic in Provider
+    final count = await context.read<AppGlobalProvider>().scanSlips();
     
-    // Reload IDs in case they changed
-    final albumIds = await _historyService.getSelectedAlbumIds();
-    if (!mounted) return;
-
-    final albums = await PhotoManager.getAssetPathList(type: RequestType.image);
-    
-    for (final album in albums) {
-      if (albumIds.contains(album.id)) {
-        final cutoffDate = await _historyService.getCutoffDate(album.id);
-        final assetCount = await album.assetCountAsync;
-        final assets = await album.getAssetListRange(start: 0, end: assetCount > 200 ? 200 : assetCount);
-        
-        for (final asset in assets) {
-          if (asset.type == AssetType.image && asset.createDateTime.isAfter(cutoffDate)) {
-             final file = await asset.file;
-             if (file != null) newImages.add(file);
-          }
-        }
-        // Update history for this album
-        await _historyService.updateLastScanTime(album.id);
-      }
-    }
-
-    // Sort Oldest -> Newest
-    newImages.sort((a, b) => a.lastModifiedSync().compareTo(b.lastModifiedSync()));
-
-    if (newImages.isEmpty) {
-      if (mounted) {
-        setState(() => _isProcessing = false);
-        showTopRightToast(context, "No new slips found.");
-      }
-      return;
-    }
-
-    // 3. Insert Pending Messages
-    for (final file in newImages) {
-      final msg = ChatMessage(
-        text: "Slip: ${file.path.split('/').last}",
-        isUser: false, // System message essentially
-        timestamp: DateTime.now(),
-        imagePath: file.path,
-        // slipData is null initially -> "Reading..."
-      );
-      await DatabaseService().addChatMessage(msg);
-    }
-    
-    if (mounted) {
-      setState(() => _isProcessing = false);
+    if (count > 0) {
+      // Scroll to bottom to see new "Reading..." messages
       _scrollToBottom();
-    }
-
-    // 4. Process Background Queue
-    if (mounted) {
-      _processSlipQueue(newImages);
-    }
-  }
-
-  Future<void> _processSlipQueue(List<File> files) async {
-    for (final file in files) {
-      // Allow processing to continue even if screen is closed (Background Mode)
-      // if (!mounted) return; 
-      
-      ChatMessage? msg;
-
-      try {
-        // Find the message in DB (we need the Hive object to update it)
-        final box = DatabaseService().chatBox;
-        // Use firstWhere safely
-        try {
-          msg = box.values.firstWhere((m) => m.imagePath == file.path);
-        } catch (_) {
-          // Not found, skip
-          continue;
-        }
-        
-        if (msg.isInBox) {
-          final slip = await _scanner.processImageFile(file);
-          if (slip != null) {
-            msg.slipData = {
-              'bank': slip.bank,
-              'amount': slip.amount,
-              'date': slip.date,
-              'memo': slip.memo,
-              'recipient': slip.recipient,
-            };
-            await msg.save(); // Update UI via Hive listener
-          } else {
-             // Set error state so UI stops loading
-             msg.slipData = {'error': true};
-             msg.text = "Failed to read slip.";
-             await msg.save();
-          }
-        }
-      } catch (e) {
-        print("Error processing slip in chat: $e");
-        // Ensure UI stops loading even on crash
-        if (msg != null && msg.isInBox) {
-           msg.slipData = {'error': true};
-           msg.text = "Error: $e";
-           await msg.save();
-        }
+    } else {
+      if (mounted) {
+        showTopRightToast(context, "No new slips found.");
       }
     }
   }

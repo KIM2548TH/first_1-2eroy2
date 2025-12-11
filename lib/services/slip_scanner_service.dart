@@ -11,11 +11,19 @@ class SlipData {
   final DateTime date;
   final String? memo;
   final String? recipient; // Extracted Shop/Recipient Name
+  final String? slipImagePath; // Path to the original image file
 
-  SlipData({required this.bank, required this.amount, required this.date, this.memo, this.recipient});
+  SlipData({
+    required this.bank, 
+    required this.amount, 
+    required this.date, 
+    this.memo, 
+    this.recipient,
+    this.slipImagePath,
+  });
 
   @override
-  String toString() => 'SlipData(bank: $bank, amount: $amount, date: $date, memo: $memo, recipient: $recipient)';
+  String toString() => 'SlipData(bank: $bank, amount: $amount, date: $date, memo: $memo, recipient: $recipient, path: $slipImagePath)';
   
   Map<String, dynamic> toMap() {
     return {
@@ -24,6 +32,7 @@ class SlipData {
       'date': date.toIso8601String(),
       'memo': memo,
       'recipient': recipient,
+      'slipImagePath': slipImagePath,
     };
   }
 }
@@ -190,7 +199,14 @@ class SlipScannerService {
     DateTime date = await file.lastModified();
     print("[DEBUG_LOGIC] Date extracted (from file): $date");
 
-    final slip = SlipData(bank: bank, amount: amount, date: date, memo: memo, recipient: recipient);
+    final slip = SlipData(
+      bank: bank, 
+      amount: amount, 
+      date: date, 
+      memo: memo, 
+      recipient: recipient,
+      slipImagePath: file.path, // Store the path!
+    );
     print("[DEBUG_FINAL_OBJECT] Created SlipData: $slip");
     return slip;
   }
