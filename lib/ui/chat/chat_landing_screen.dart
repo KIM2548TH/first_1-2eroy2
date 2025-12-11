@@ -1,6 +1,11 @@
 import 'package:flutter/material.dart';
+import 'package:hive_flutter/hive_flutter.dart'; // Import HiveFlutter
 import '../../core/constants.dart';
 import '../../services/theme_service.dart';
+import '../../services/database_service.dart'; // Import DatabaseService
+import '../../models/chat_message.dart'; // Import ChatMessage
+import '../../utils/transaction_helper.dart'; // Import TransactionHelper
+import '../widgets/custom_toast.dart'; // Import CustomToast
 import 'chat_conversation_screen.dart';
 
 class ChatLandingScreen extends StatefulWidget {
@@ -105,13 +110,32 @@ class _ChatLandingScreenState extends State<ChatLandingScreen> with SingleTicker
                       children: [
                         _buildAnimatedItem(
                           delay: 200,
-                          child: _buildCleanChatCard(
-                            context,
-                            title: "บันทึกรายจ่าย",
-                            subtitle: "สแกนสลิป หรือพิมพ์รายการ",
-                            icon: Icons.receipt_long_rounded,
-                            color: Colors.redAccent,
-                            mode: ChatMode.expense,
+                          child: ValueListenableBuilder(
+                            valueListenable: DatabaseService().chatBox.listenable(),
+                            builder: (context, Box<ChatMessage> box, _) {
+                              final unsavedCount = box.values.where((m) => m.imagePath != null && !m.isSaved && m.slipData != null).length;
+                              
+                              return _buildCleanChatCard(
+                                context,
+                                title: "บันทึกรายจ่าย",
+                                subtitle: "สแกนสลิป หรือพิมพ์รายการ",
+                                icon: Icons.receipt_long_rounded,
+                                color: Colors.redAccent,
+                                mode: ChatMode.expense,
+                                notificationCount: unsavedCount,
+                                onSaveAll: unsavedCount > 0 ? () async {
+                                  final messages = box.values.where((m) => m.imagePath != null && !m.isSaved && m.slipData != null).toList();
+                                  int saved = 0;
+                                  for (final msg in messages) {
+                                    await TransactionHelper.saveSlipAsTransaction(msg, Map<String, dynamic>.from(msg.slipData!));
+                                    saved++;
+                                  }
+                                  if (context.mounted) {
+                                    showTopRightToast(context, "บันทึก $saved รายการเรียบร้อย!");
+                                  }
+                                } : null,
+                              );
+                            }
                           ),
                         ),
                         
@@ -266,71 +290,127 @@ class _ChatLandingScreenState extends State<ChatLandingScreen> with SingleTicker
     required IconData icon,
     required Color color,
     required ChatMode mode,
+    int notificationCount = 0,
+    VoidCallback? onSaveAll,
   }) {
     final theme = Theme.of(context);
     
-    return Container(
-      margin: const EdgeInsets.only(bottom: 16),
-      decoration: BoxDecoration(
-        color: theme.scaffoldBackgroundColor, 
-        borderRadius: BorderRadius.circular(24),
-        border: Border.all(color: theme.dividerColor.withOpacity(0.1)),
-      ),
-      child: Material(
-        color: Colors.transparent,
-        borderRadius: BorderRadius.circular(24),
-        child: InkWell(
-          onTap: () {
-            setState(() {
-              _selectedMode = mode;
-            });
-          },
-          borderRadius: BorderRadius.circular(24),
-          child: Padding(
-            padding: const EdgeInsets.all(20),
-            child: Row(
-              children: [
-                Container(
-                  width: 56,
-                  height: 56,
-                  decoration: BoxDecoration(
-                    color: color.withOpacity(0.1),
-                    borderRadius: BorderRadius.circular(18),
-                  ),
-                  child: Icon(icon, color: color, size: 28),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Text(
-                        title,
-                        style: TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
-                          fontFamily: 'Kanit',
-                          color: theme.colorScheme.onSurface,
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        Container(
+          margin: const EdgeInsets.only(bottom: 16),
+          decoration: BoxDecoration(
+            color: theme.scaffoldBackgroundColor, 
+            borderRadius: BorderRadius.circular(24),
+            border: Border.all(color: theme.dividerColor.withOpacity(0.1)),
+          ),
+          child: Material(
+            color: Colors.transparent,
+            borderRadius: BorderRadius.circular(24),
+            child: InkWell(
+              onTap: () {
+                setState(() {
+                  _selectedMode = mode;
+                });
+              },
+              borderRadius: BorderRadius.circular(24),
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 56,
+                      height: 56,
+                      decoration: BoxDecoration(
+                        color: color.withOpacity(0.1),
+                        borderRadius: BorderRadius.circular(18),
+                      ),
+                      child: Icon(icon, color: color, size: 28),
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            title,
+                            style: TextStyle(
+                              fontSize: 18,
+                              fontWeight: FontWeight.bold,
+                              fontFamily: 'Kanit',
+                              color: theme.colorScheme.onSurface,
+                            ),
+                          ),
+                          const SizedBox(height: 4),
+                          Text(
+                            subtitle,
+                            style: TextStyle(
+                              fontSize: 14,
+                              fontFamily: 'Kanit',
+                              color: theme.colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    
+                    // Save All Button (Inside Card)
+                    if (onSaveAll != null)
+                      Padding(
+                        padding: const EdgeInsets.only(right: 8),
+                        child: InkWell(
+                          onTap: onSaveAll,
+                          borderRadius: BorderRadius.circular(20),
+                          child: Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.green.withOpacity(0.1),
+                              shape: BoxShape.circle,
+                            ),
+                            child: const Icon(Icons.save_alt, color: Colors.green, size: 24),
+                          ),
                         ),
                       ),
-                      const SizedBox(height: 4),
-                      Text(
-                        subtitle,
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontFamily: 'Kanit',
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
+
+                    Icon(Icons.chevron_right_rounded, color: theme.colorScheme.outline),
+                  ],
                 ),
-                Icon(Icons.chevron_right_rounded, color: theme.colorScheme.outline),
-              ],
+              ),
             ),
           ),
         ),
-      ),
+
+        // Notification Badge
+        if (notificationCount > 0)
+          Positioned(
+            top: -6,
+            right: -6,
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: Colors.red,
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(color: theme.scaffoldBackgroundColor, width: 2),
+                boxShadow: [
+                  BoxShadow(
+                    color: Colors.red.withOpacity(0.3),
+                    blurRadius: 4,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Text(
+                '$notificationCount',
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 12,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+          ),
+      ],
     );
   }
 }

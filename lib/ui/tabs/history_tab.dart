@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:intl/intl.dart';
+import 'dart:io';
 import 'package:table_calendar/table_calendar.dart';
 import '../../models/transaction.dart';
 import '../../services/database_service.dart';
@@ -386,7 +387,7 @@ class _HistoryTabState extends State<HistoryTab> {
                                       },
                                       child: TransactionListItem(
                                         transaction: tx,
-                                        onTap: () {},
+                                        onTap: () => _showEditDialog(context, tx),
                                         showDivider: false,
                                       ),
                                     );
@@ -404,5 +405,248 @@ class _HistoryTabState extends State<HistoryTab> {
       ),
     );
 
+  }
+
+  void _showEditDialog(BuildContext context, Transaction transaction) {
+    final itemController = TextEditingController(text: transaction.item);
+    final priceController = TextEditingController(text: transaction.price.toString());
+    final qtyController = TextEditingController(text: (transaction.qty ?? 1).toString());
+    String selectedCategory = transaction.category ?? 'Uncategorized';
+    DateTime selectedDate = transaction.date;
+
+    final categories = [
+      'Food', 'Transport', 'Shopping', 'Bills', 'Transfer', 
+      'Entertainment', 'Health', 'Salary', 'Other', 'Uncategorized'
+    ];
+
+    showDialog(
+      context: context,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) {
+          return AlertDialog(
+            title: const Text("แก้ไขรายการ"),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Slip Image (If available)
+                  if (transaction.slipImagePath != null && File(transaction.slipImagePath!).existsSync())
+                    GestureDetector(
+                      onTap: () {
+                        // Show full screen image
+                        showDialog(
+                          context: context,
+                          builder: (ctx) => Dialog(
+                            backgroundColor: Colors.transparent,
+                            insetPadding: EdgeInsets.zero,
+                            child: Stack(
+                              children: [
+                                InteractiveViewer(
+                                  child: Image.file(File(transaction.slipImagePath!)),
+                                ),
+                                Positioned(
+                                  top: 40,
+                                  right: 20,
+                                  child: IconButton(
+                                    icon: const Icon(Icons.close, color: Colors.white, size: 30),
+                                    onPressed: () => Navigator.pop(ctx),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                      child: Container(
+                        height: 200,
+                        width: double.infinity,
+                        margin: const EdgeInsets.only(bottom: 16),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(12),
+                          image: DecorationImage(
+                            image: FileImage(File(transaction.slipImagePath!)),
+                            fit: BoxFit.cover,
+                          ),
+                        ),
+                        child: Container(
+                          decoration: BoxDecoration(
+                            borderRadius: BorderRadius.circular(12),
+                            color: Colors.black.withOpacity(0.1),
+                          ),
+                          child: const Center(
+                            child: Icon(Icons.zoom_in, color: Colors.white, size: 32),
+                          ),
+                        ),
+                      ),
+                    ),
+
+                  // Date Picker
+                  InkWell(
+                    onTap: () async {
+                      final picked = await showDatePicker(
+                        context: context,
+                        initialDate: selectedDate,
+                        firstDate: DateTime(2000),
+                        lastDate: DateTime.now(),
+                      );
+                      if (picked != null) {
+                        if (context.mounted) {
+                          final time = await showTimePicker(
+                            context: context, 
+                            initialTime: TimeOfDay.fromDateTime(selectedDate)
+                          );
+                          if (time != null) {
+                            setState(() {
+                              selectedDate = DateTime(
+                                picked.year, picked.month, picked.day, 
+                                time.hour, time.minute
+                              );
+                            });
+                          }
+                        }
+                      }
+                    },
+                    child: Container(
+                      padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 12),
+                      decoration: BoxDecoration(
+                        border: Border.all(color: Colors.grey.shade300),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.calendar_today, size: 16, color: Colors.grey),
+                          const SizedBox(width: 8),
+                          Text(
+                            DateFormat('dd/MM/yyyy HH:mm').format(selectedDate),
+                            style: const TextStyle(fontSize: 16),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+                  
+                  // Item Name
+                  TextFormField(
+                    controller: itemController,
+                    decoration: const InputDecoration(
+                      labelText: 'ชื่อรายการ',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Price & Qty
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 2,
+                        child: TextFormField(
+                          controller: priceController,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'ราคา',
+                            border: OutlineInputBorder(),
+                            prefixText: '฿',
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        flex: 1,
+                        child: TextFormField(
+                          controller: qtyController,
+                          keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                          decoration: const InputDecoration(
+                            labelText: 'จำนวน',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+
+                  // Category
+                  DropdownButtonFormField<String>(
+                    value: categories.contains(selectedCategory) ? selectedCategory : 'Uncategorized',
+                    decoration: const InputDecoration(
+                      labelText: 'หมวดหมู่',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 12),
+                    ),
+                    items: categories.map((c) => DropdownMenuItem(
+                      value: c,
+                      child: Row(
+                        children: [
+                          Icon(CategoryStyles.getIcon(c), size: 16, color: CategoryStyles.getColor(c)),
+                          const SizedBox(width: 8),
+                          Text(CategoryStyles.getThaiName(c)),
+                        ],
+                      ),
+                    )).toList(),
+                    onChanged: (val) {
+                      if (val != null) setState(() => selectedCategory = val);
+                    },
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              // Delete Button
+              TextButton(
+                onPressed: () async {
+                  final confirm = await showDialog<bool>(
+                    context: context,
+                    builder: (ctx) => AlertDialog(
+                      title: const Text("ลบรายการ?"),
+                      content: const Text("คุณต้องการลบรายการนี้ใช่หรือไม่?"),
+                      actions: [
+                        TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text("ไม่")),
+                        TextButton(
+                          onPressed: () => Navigator.pop(ctx, true), 
+                          style: TextButton.styleFrom(foregroundColor: Colors.red),
+                          child: const Text("ลบ"),
+                        ),
+                      ],
+                    ),
+                  );
+                  
+                  if (confirm == true && context.mounted) {
+                    transaction.delete(); // Hive delete
+                    Navigator.pop(context);
+                  }
+                },
+                style: TextButton.styleFrom(foregroundColor: Colors.red),
+                child: const Text("ลบรายการ"),
+              ),
+              
+              // Cancel
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text("ยกเลิก"),
+              ),
+              
+              // Save
+              ElevatedButton(
+                onPressed: () {
+                  transaction.item = itemController.text;
+                  transaction.price = double.tryParse(priceController.text) ?? transaction.price;
+                  transaction.qty = double.tryParse(qtyController.text) ?? 1.0;
+                  transaction.category = selectedCategory;
+                  transaction.date = selectedDate;
+                  transaction.save(); // Hive save
+                  Navigator.pop(context);
+                },
+                child: const Text("บันทึก"),
+              ),
+            ],
+          );
+        },
+      ),
+    );
   }
 }
