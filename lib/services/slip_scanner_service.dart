@@ -41,8 +41,8 @@ class SlipScannerService {
   final ScanHistoryService _historyService = ScanHistoryService();
   final ImageProcessorService _imageProcessor = ImageProcessorService();
 
-  Future<List<SlipData>> scanNewSlips() async {
-    print("[SlipScanner] Starting scan...");
+  Future<List<File>> fetchNewSlipFiles({bool isManual = false}) async {
+    print("[SlipScanner] Starting Smart Fetch... (Manual: $isManual)");
     
     // 1. Check Permissions
     final PermissionState ps = await PhotoManager.requestPermissionExtend();
@@ -51,91 +51,134 @@ class SlipScannerService {
       return [];
     }
 
-    // 2. Get Settings & History
-    final selectedAlbumIds = await _historyService.getSelectedAlbumIds();
+    // 2. Determine Time Window
     final scannedFileIds = await _historyService.getScannedFileIds();
+    final selectedAlbumIds = await _historyService.getSelectedAlbumIds();
     
-    // Strict 1-Month Window
-    final now = DateTime.now();
-    final cutoffDate = now.subtract(const Duration(days: 30));
+    final DateTime endDateTime = DateTime.now();
+    DateTime startDateTime;
 
-    print("[SlipScanner] Scanning images since: $cutoffDate");
-    print("[SlipScanner] Selected Albums: ${selectedAlbumIds.isEmpty ? 'ALL (Recent)' : selectedAlbumIds.length}");
-
-    // 3. Query Images
-    List<AssetPathEntity> albums = [];
-    
-    if (selectedAlbumIds.isNotEmpty) {
-       // Fetch specific albums
-       // Note: PhotoManager doesn't allow fetching by ID directly efficiently without getting all paths first usually,
-       // but we can filter the list.
-       final allAlbums = await PhotoManager.getAssetPathList(type: RequestType.image);
-       albums = allAlbums.where((a) => selectedAlbumIds.contains(a.id)).toList();
+    if (isManual) {
+      // Manual Scan: User wants to re-check last 30 days
+      startDateTime = endDateTime.subtract(const Duration(days: 30));
+      print("[SlipScanner] Manual Scan Mode: Re-checking last 30 days.");
     } else {
-       // Default to Recent if nothing selected (or maybe user wants nothing? 
-       // But for UX, default to Recent is safer for first launch)
-       albums = await PhotoManager.getAssetPathList(
-        type: RequestType.image,
-        filterOption: FilterOptionGroup(
-          createTimeCond: DateTimeCond(
-            min: cutoffDate,
-            max: now,
-          ),
-        ),
-      );
+      // Auto Scan: Incremental from last checkpoint
+      if (selectedAlbumIds.isEmpty) {
+         startDateTime = await _historyService.getCutoffDate('global_recent');
+      } else {
+         DateTime minDate = endDateTime;
+         bool first = true;
+         for (final id in selectedAlbumIds) {
+           final date = await _historyService.getCutoffDate(id);
+           if (first || date.isBefore(minDate)) {
+             minDate = date;
+             first = false;
+           }
+         }
+         startDateTime = minDate;
+      }
+      print("[SlipScanner] Auto Scan Mode: Incremental from $startDateTime");
+    }
+
+    print("[SlipScanner] Time Window: $startDateTime to $endDateTime (Scanning Oldest First)");
+
+    // 3. Configure PhotoManager Filter (Database Level)
+    final FilterOptionGroup option = FilterOptionGroup(
+      // User Request: Sort Oldest -> Newest
+      orders: [
+        OrderOption(type: OrderOptionType.createDate, asc: true),
+      ],
+      // Date Filtering at DB Level
+      createTimeCond: DateTimeCond(
+        min: startDateTime,
+        max: endDateTime,
+      ),
+    );
+
+    // 4. Fetch Albums with Filter
+    // This returns only albums that contain assets matching the filter
+    List<AssetPathEntity> albums = await PhotoManager.getAssetPathList(
+      type: RequestType.image,
+      filterOption: option,
+    );
+
+    // Filter by selected albums if needed
+    if (selectedAlbumIds.isNotEmpty) {
+      albums = albums.where((a) => selectedAlbumIds.contains(a.id)).toList();
+    } else {
+      // If "Recent" mode, usually we just want the "Recent" album (first one)
+      // But scanning all albums that have new photos is also valid and safer.
+      // Let's stick to the user's previous preference: "Recent" usually means the aggregate album.
       if (albums.isNotEmpty) {
-        albums = [albums.first]; // Only scan Recent
+         // Find the "Recent" album (usually isAll is true)
+         final recentAlbum = albums.firstWhere((a) => a.isAll, orElse: () => albums.first);
+         albums = [recentAlbum];
       }
     }
 
-    if (albums.isEmpty) return [];
+    if (albums.isEmpty) {
+      print("[SlipScanner] No albums found with new images.");
+      return [];
+    }
 
-    List<SlipData> foundSlips = [];
+    print("[SlipScanner] Scanning ${albums.length} albums: ${albums.map((a) => a.name).toList()}");
+
+    List<AssetEntity> allAssets = [];
+    List<File> foundFiles = [];
     List<String> newScannedIds = [];
 
     try {
+      // 5. Collect Assets from All Albums
       for (final album in albums) {
         final int assetCount = await album.assetCountAsync;
         if (assetCount == 0) continue;
 
-        // Fetch assets (Batch size could be optimized, but let's fetch all for now within range)
-        // We need to apply date filter manually if we fetched specific albums without filter option
-        // But getAssetListRange doesn't filter by date easily unless we set filterOption on the path.
-        // So we'll fetch and check date manually for safety and "Mark as Read" check.
+        final int fetchCount = assetCount > 500 ? 500 : assetCount;
+        final assets = await album.getAssetListRange(start: 0, end: fetchCount);
+
+        print("[SlipScanner] Album '${album.name}': Found $assetCount new assets (Fetched top $fetchCount)");
+        allAssets.addAll(assets);
         
-        final assets = await album.getAssetListRange(start: 0, end: assetCount);
+        // Update checkpoint for this album immediately as we have "scanned" it
+        if (selectedAlbumIds.contains(album.id)) {
+           await _historyService.updateLastScanTime(album.id);
+        }
+      }
 
-        for (final asset in assets) {
-          // Check "Mark as Read"
+      // 6. Deduplicate & Sort Globally (Oldest -> Newest)
+      // Use a Map to deduplicate by ID
+      final Map<String, AssetEntity> uniqueAssetsMap = {};
+      for (final asset in allAssets) {
+        uniqueAssetsMap[asset.id] = asset;
+      }
+      final List<AssetEntity> sortedAssets = uniqueAssetsMap.values.toList();
+      
+      // Sort: Ascending (Oldest First)
+      sortedAssets.sort((a, b) => a.createDateTime.compareTo(b.createDateTime));
+      
+      print("[SlipScanner] Global Sort: Processing ${sortedAssets.length} unique assets...");
+
+      // 7. Convert to Files
+      for (final asset in sortedAssets) {
+          // Double check "Mark as Read" (Safety net)
           if (scannedFileIds.contains(asset.id)) {
-            continue; // Skip already scanned
-          }
-
-          // Check Date (Strict)
-          if (asset.createDateTime.isBefore(cutoffDate)) {
-            continue; // Too old
+            continue; 
           }
 
           File? file = await asset.file;
           if (file == null) continue;
 
-          try {
-            final slip = await processImageFile(file);
-            
-            // Mark as read regardless of result (we processed it)
-            newScannedIds.add(asset.id);
-
-            if (slip != null) {
-              foundSlips.add(slip);
-              print("[SlipScanner] Found Slip: $slip");
-            }
-          } catch (e) {
-            print("[SlipScanner] Error processing file: $e");
-          } finally {
-            file = null;
-          }
-        }
+          // Add to list (Processing will be done by Provider to show UI feedback)
+          foundFiles.add(file);
+          newScannedIds.add(asset.id);
       }
+      
+      // Update global checkpoint if in Recent mode
+      if (selectedAlbumIds.isEmpty) {
+        await _historyService.updateLastScanTime('global_recent');
+      }
+
     } finally {
       // Save new scanned IDs
       if (newScannedIds.isNotEmpty) {
@@ -144,8 +187,8 @@ class SlipScannerService {
       }
     }
 
-    print("[SlipScanner] Scan complete. Found ${foundSlips.length} slips.");
-    return foundSlips;
+    print("[SlipScanner] Fetch complete. Found ${foundFiles.length} new files.");
+    return foundFiles;
   }
 
   Future<SlipData?> processImageFile(File file) async {
@@ -177,7 +220,8 @@ class SlipScannerService {
     double? amount = _detectAmount(text);
     
     if (amount == null) {
-      print("[DEBUG_LOGIC] Amount detection FAILED. Aborting.");
+      print("[DEBUG_LOGIC] Amount detection FAILED for file: ${file.path}");
+      print("[DEBUG_FAILURE_CONTEXT] Raw Text was:\n$text\n[END RAW TEXT]");
       return null; // Cannot proceed without amount
     }
     print("[DEBUG_LOGIC] Amount Detected: $amount");
@@ -235,7 +279,7 @@ class SlipScannerService {
     }
 
     // GSB
-    if (text.contains('ออมสิน') || lowerText.contains('gsb')) {
+    if (text.contains('ออมสิน') || text.contains('ธนาคารออมสิน') || lowerText.contains('gsb') || lowerText.contains('mymo')) {
       return 'GSB';
     }
     

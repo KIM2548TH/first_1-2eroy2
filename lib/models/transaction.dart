@@ -28,6 +28,12 @@ class Transaction extends HiveObject {
   @HiveField(7)
   String? type; // 'expense' or 'income'
 
+  @HiveField(8)
+  String? source; // Effective source (e.g. 'Cash', 'KBank')
+
+  @HiveField(9)
+  String? scannedBank; // Original scanned bank name
+
   Transaction({
     required this.item,
     required this.price,
@@ -37,5 +43,7 @@ class Transaction extends HiveObject {
     this.note,
     this.slipImagePath,
     this.type = 'expense', // Default to expense
+    this.source,
+    this.scannedBank,
   });
 }

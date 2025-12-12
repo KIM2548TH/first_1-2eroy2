@@ -46,6 +46,8 @@ class AppConstants {
     'line pay', 'rabbit',     // Rabbit LINE Pay
     
     // 🟡 Common Folders (User Request)
-    'pictures',               // Some devices save slips here
+    'pictures',               // Target: /Internal storage/Pictures/ (Where MyMo slip is)
+    'dcim',                   // Optional: Standard photo directory
+    'images',                 // Generic fallback
   ];
 }

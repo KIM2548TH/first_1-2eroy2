@@ -22,14 +22,25 @@ class TransactionHelper {
       slipData['memo'] = itemName; // Update the map
     }
 
+    // 3. Determine Source and Scanned Bank
+    String scannedBank = slipData['bank'] ?? 'Unknown Slip';
+    String source = scannedBank;
+    
+    // If unknown, default source to 'Cash' (as per user request)
+    if (scannedBank == 'Unknown Slip') {
+      source = 'Cash';
+    }
+
     await DatabaseService().addTransaction(
       itemName,
       (slipData['amount'] ?? 0.0).toDouble(),
       category: category,
       date: slipData['date'] is DateTime ? slipData['date'] : DateTime.now(),
-      note: slipData['bank'],
+      note: slipData['memo'], // Use memo for note, bank is now in source/scannedBank
       slipImagePath: message.imagePath,
       type: 'expense', // Slips are expenses for now
+      source: source,
+      scannedBank: scannedBank,
     );
     
     // Ensure message object is updated before saving

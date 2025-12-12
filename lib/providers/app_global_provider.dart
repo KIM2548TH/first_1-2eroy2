@@ -75,65 +75,46 @@ class AppGlobalProvider extends ChangeNotifier with WidgetsBindingObserver {
     }
   }
 
-  // Original "Button" Logic moved here
-  Future<int> scanSlips() async {
+  // Refactored to use SlipScannerService (Single Source of Truth)
+  Future<int> scanSlips({bool isManual = false}) async {
     if (_isScanning) return 0;
     _isScanning = true;
     notifyListeners();
 
     try {
-      // 1. Check Folder Selection
+      // 0. Check if folders are selected (User Requirement: Must select first)
       final selectedAlbumIds = await _historyService.getSelectedAlbumIds();
       
-      // 2. Fetch Images
-      List<File> newImages = [];
-      
-      // Reload IDs
-      final albumIds = await _historyService.getSelectedAlbumIds();
-      
-      final albums = await PhotoManager.getAssetPathList(type: RequestType.image);
-      
-      if (albumIds.isEmpty) {
-        // Fallback: Scan "Recent"
-        if (albums.isNotEmpty) {
-           // Usually first one is Recent
-           final recent = albums.first;
-           await _scanAlbum(recent, newImages);
-        }
-      } else {
-        for (final album in albums) {
-          if (albumIds.contains(album.id)) {
-            await _scanAlbum(album, newImages);
-          }
-        }
-      }
-
-      // Sort Oldest -> Newest
-      newImages.sort((a, b) => a.lastModifiedSync().compareTo(b.lastModifiedSync()));
-
-      if (newImages.isEmpty) {
-        // print("[AppGlobalProvider] No new slips found."); // Reduce noise
+      if (!isManual && selectedAlbumIds.isEmpty) {
+        print("[AppGlobalProvider] Auto-Scan Aborted: No folders selected.");
         return 0;
       }
 
-      print("[AppGlobalProvider] Found ${newImages.length} new images to process.");
+      // Delegate to SlipScannerService to just FETCH files (Smart Fetch)
+      final newFiles = await _scannerService.fetchNewSlipFiles(isManual: isManual);
 
-      // 3. Insert Pending Messages (The "Reading..." cards)
-      for (final file in newImages) {
+      if (newFiles.isEmpty) {
+        return 0;
+      }
+
+      print("[AppGlobalProvider] Found ${newFiles.length} new images. Creating UI cards...");
+
+      // 1. Create "Reading..." Cards IMMEDIATELY
+      for (final file in newFiles) {
         final msg = ChatMessage(
           text: "Slip: ${file.path.split('/').last}",
           isUser: false, // System message
           timestamp: DateTime.now(),
           imagePath: file.path,
-          // slipData is null initially -> "Reading..."
+          // slipData is null -> UI shows "Reading..."
         );
         await DatabaseService().addChatMessage(msg);
       }
-      
-      // 4. Process Background Queue
-      _processSlipQueue(newImages);
 
-      return newImages.length;
+      // 2. Process in Background (Update Cards)
+      _processSlipQueue(newFiles);
+
+      return newFiles.length;
 
     } catch (e) {
       print("[AppGlobalProvider] Scan Error: $e");

@@ -21,7 +21,7 @@ class DatabaseService {
     _settingsBox = await Hive.openBox('settings');
   }
 
-  Future<void> addTransaction(String item, double price, {String category = 'Uncategorized', double qty = 1.0, DateTime? date, String? note, String? slipImagePath, String type = 'expense'}) async {
+  Future<void> addTransaction(String item, double price, {String category = 'Uncategorized', double qty = 1.0, DateTime? date, String? note, String? slipImagePath, String type = 'expense', String? source, String? scannedBank}) async {
     final transaction = Transaction(
       item: item,
       price: price,
@@ -31,6 +31,8 @@ class DatabaseService {
       note: note,
       slipImagePath: slipImagePath,
       type: type,
+      source: source,
+      scannedBank: scannedBank,
     );
     await _transactionBox!.add(transaction);
   }
